@@ -7,10 +7,15 @@
 //!
 //! The add-account flow needs two manual URL pastes (login, then consent) — not a UX choice,
 //! a confirmed constraint of Jagex's OAuth server (see `runeroster_core::auth` module docs).
+//!
+//! Layout (profile list screen): OSRS news on the left, account management on the right,
+//! side by side. Uses the built-in `CatppuccinMocha` theme plus rounded "card" containers
+//! for a more modern look than iced's bare defaults.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, image, row, rule, scrollable, text, text_input};
 use iced::{Element, Length, Task, Theme};
 use uuid::Uuid;
 
@@ -18,8 +23,12 @@ use runeroster_core::accounts::{add_profile_from_login, remove_profile, ProfileR
 use runeroster_core::auth::{LoginFlow, LoginOutcome};
 use runeroster_core::characters::Character;
 use runeroster_core::launcher::{launch, LaunchTarget};
+use runeroster_core::news::{fetch_latest_news, NewsItem};
 use runeroster_core::runelite_config::copy_profile_settings_from_default;
 use runeroster_core::session::{reconnect_profile, LaunchSession};
+
+const NEWS_ITEM_COUNT: usize = 2;
+const NEWS_COLUMN_WIDTH: f32 = 408.0;
 
 fn profiles_path() -> PathBuf {
     std::env::var_os("APPDATA")
@@ -29,6 +38,16 @@ fn profiles_path() -> PathBuf {
         .join("profiles.json")
 }
 
+/// A card-style container: rounded background, subtle border — used throughout instead of
+/// iced's bare default container to give the UI a more modern, less "raw toolkit" look.
+fn card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content)
+        .padding(16)
+        .width(Length::Fill)
+        .style(container::rounded_box)
+        .into()
+}
+
 struct App {
     http: reqwest::Client,
     registry: ProfileRegistry,
@@ -36,6 +55,9 @@ struct App {
     runelite_path: Option<PathBuf>,
     screen: Screen,
     status: Option<String>,
+    news: Vec<NewsItem>,
+    news_error: Option<String>,
+    news_images: HashMap<String, image::Handle>,
 }
 
 enum Screen {
@@ -84,21 +106,51 @@ enum Message {
     RemoveProfile(Uuid),
     CopySettingsFromDefault(Uuid),
     LaunchCharacter(usize),
+    NewsFetched(Result<Vec<NewsItem>, String>),
+    NewsImageFetched(String, Result<Vec<u8>, String>),
+}
+
+/// Downloads a news thumbnail's raw bytes so it can be decoded into an `image::Handle`.
+/// Kept separate from `fetch_latest_news` since the feed's XML has no image bytes, only URLs.
+async fn fetch_image_bytes(http: reqwest::Client, url: String) -> (String, Result<Vec<u8>, String>) {
+    let result = async {
+        let response = http.get(&url).send().await?.error_for_status()?;
+        let bytes = response.bytes().await?;
+        Ok::<Vec<u8>, reqwest::Error>(bytes.to_vec())
+    }
+    .await;
+    (url, result.map_err(|e| e.to_string()))
 }
 
 impl App {
-    fn new() -> Self {
+    fn new() -> (Self, Task<Message>) {
         let registry_path = profiles_path();
         let registry = ProfileRegistry::load(&registry_path).unwrap_or_default();
         let runelite_path = runeroster_platform::find_runelite();
-        Self {
-            http: reqwest::Client::new(),
-            registry,
-            registry_path,
-            runelite_path,
-            screen: Screen::ProfileList,
-            status: None,
-        }
+        let http = reqwest::Client::new();
+
+        let news_task = {
+            let http = http.clone();
+            Task::perform(
+                async move { fetch_latest_news(&http, NEWS_ITEM_COUNT).await },
+                |result| Message::NewsFetched(result.map_err(|e| e.to_string())),
+            )
+        };
+
+        (
+            Self {
+                http,
+                registry,
+                registry_path,
+                runelite_path,
+                screen: Screen::ProfileList,
+                status: None,
+                news: Vec::new(),
+                news_error: None,
+                news_images: HashMap::new(),
+            },
+            news_task,
+        )
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -309,6 +361,33 @@ impl App {
                 self.screen = Screen::ProfileList;
                 Task::none()
             }
+            Message::NewsFetched(result) => {
+                match result {
+                    Ok(items) => {
+                        let image_tasks = items
+                            .iter()
+                            .filter_map(|item| item.image_url.clone())
+                            .map(|url| {
+                                let http = self.http.clone();
+                                Task::perform(fetch_image_bytes(http, url), |(url, result)| {
+                                    Message::NewsImageFetched(url, result)
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        self.news = items;
+                        self.news_error = None;
+                        return Task::batch(image_tasks);
+                    }
+                    Err(e) => self.news_error = Some(e),
+                }
+                Task::none()
+            }
+            Message::NewsImageFetched(url, result) => {
+                if let Ok(bytes) = result {
+                    self.news_images.insert(url, image::Handle::from_bytes(bytes));
+                }
+                Task::none()
+            }
         }
     }
 
@@ -354,34 +433,94 @@ impl App {
     }
 
     fn view_profile_list(&self) -> Element<'_, Message> {
-        let mut list = column![].spacing(10);
+        let news_section = column![text("OSRS News").size(20), self.view_news(),]
+            .spacing(16)
+            .width(Length::Fixed(NEWS_COLUMN_WIDTH));
+
+        let mut profile_list = column![].spacing(12);
         for profile in &self.registry.profiles {
-            list = list.push(
-                row![
-                    text(profile.display_name.clone()).width(Length::Fill),
-                    button("Launch").on_press(Message::LaunchProfile(profile.id)),
-                    button("Copy settings from Default")
-                        .on_press(Message::CopySettingsFromDefault(profile.id)),
-                    button("Remove").on_press(Message::RemoveProfile(profile.id)),
+            profile_list = profile_list.push(card(
+                column![
+                    text(profile.display_name.clone()).size(16),
+                    row![
+                        button("Launch").on_press(Message::LaunchProfile(profile.id)),
+                        button("Copy settings from Default")
+                            .on_press(Message::CopySettingsFromDefault(profile.id)),
+                        button("Remove").on_press(Message::RemoveProfile(profile.id)),
+                    ]
+                    .spacing(8),
                 ]
-                .spacing(10),
-            );
+                .spacing(8),
+            ));
         }
 
-        let mut content = column![text("RuneRoster").size(28), list]
-            .spacing(20)
-            .push(button("Add Account").on_press(Message::StartAddAccount));
+        let mut accounts_section = column![
+            text("Accounts").size(20),
+            profile_list,
+            button("Add Account").on_press(Message::StartAddAccount),
+        ]
+        .spacing(16)
+        .width(Length::FillPortion(1));
 
         if self.runelite_path.is_none() {
-            content = content.push(text(
+            accounts_section = accounts_section.push(text(
                 "Warning: RuneLite was not found in the default install location.",
             ));
         }
         if let Some(status) = &self.status {
-            content = content.push(text(status.clone()));
+            accounts_section = accounts_section.push(text(status.clone()));
         }
 
-        scrollable(content.padding(20)).into()
+        let body = row![news_section, rule::vertical(1), accounts_section].spacing(24);
+
+        let content = column![text("RuneRoster").size(30), body]
+            .spacing(24)
+            .padding(24);
+
+        scrollable(content).into()
+    }
+
+    fn view_news(&self) -> Element<'_, Message> {
+        if let Some(error) = &self.news_error {
+            return text(format!("Couldn't load news: {error}")).into();
+        }
+        if self.news.is_empty() {
+            return text("Loading news...").into();
+        }
+
+        let mut list = column![].spacing(16);
+        for item in &self.news {
+            let mut item_content = column![].spacing(6);
+
+            if let Some(handle) = item
+                .image_url
+                .as_ref()
+                .and_then(|url| self.news_images.get(url))
+            {
+                item_content = item_content.push(
+                    container(
+                        image(handle.clone())
+                            .width(Length::Fill)
+                            .content_fit(iced::ContentFit::Cover),
+                    )
+                    .height(168)
+                    .clip(true),
+                );
+            }
+
+            item_content = item_content.push(
+                column![
+                    text(item.category.clone()).size(12),
+                    text(item.title.clone()).size(18),
+                    text(item.description.clone()).size(14),
+                    button("Read more").on_press(Message::OpenUrl(item.link.clone())),
+                ]
+                .spacing(6),
+            );
+
+            list = list.push(card(item_content));
+        }
+        list.into()
     }
 
     fn view_add_account(step: &AddAccountStep) -> Element<'_, Message> {
@@ -456,7 +595,7 @@ impl App {
 }
 
 fn theme(_state: &App) -> Theme {
-    Theme::Dark
+    Theme::CatppuccinMocha
 }
 
 fn main() -> iced::Result {

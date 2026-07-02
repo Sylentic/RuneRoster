@@ -5,6 +5,7 @@ pub mod accounts;
 pub mod auth;
 pub mod characters;
 pub mod launcher;
+pub mod news;
 pub mod runelite_config;
 pub mod session;
 pub mod store;
