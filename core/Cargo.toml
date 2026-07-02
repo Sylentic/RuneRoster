@@ -18,3 +18,7 @@ urlencoding = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+open = { workspace = true }
+
+[[example]]
+name = "login_test"

@@ -39,3 +39,6 @@ $RECYCLE.BIN/
 # credentials in the OS keyring, not files — this is just a safety net)
 .env
 *.env
+
+# Testing
+core/examples/login_test.rs
