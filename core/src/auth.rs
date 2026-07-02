@@ -13,12 +13,11 @@
 //!
 //! ## Login flow, confirmed against the live server
 //! Step 2's redirect target in the official flow is a real Jagex-owned page
-//! (`secure.runescape.com/m=weblogin/launcher-redirect`). Bolt treats that as a pure signal
-//! because it intercepts browser navigation client-side (it embeds a Chromium instance).
-//! Tested two alternatives against the live server instead:
+//! (`secure.runescape.com/m=weblogin/launcher-redirect`), not a loopback address an app can
+//! intercept locally. Tested two alternatives against the live server:
 //! - Substituting a loopback `redirect_uri` (`http://127.0.0.1:PORT/...`): **rejected** by
-//!   Jagex (`invalid_request` — redirect_uri not pre-registered for this client ID). No
-//!   custom URL scheme registration exists in Bolt's source either, so that's not an option.
+//!   Jagex (`invalid_request` — redirect_uri not pre-registered for this client ID). There's
+//!   no custom URL scheme registration option for this client either.
 //! - Using the *real* registered redirect_uri in an ordinary system browser: **works** — the
 //!   resulting page's address bar plainly contains `?code=...&state=...`, confirmed live.
 //!   So a manual copy-paste of the resulting URL is a working fallback that needs no
@@ -52,9 +51,8 @@ pub const CLIENT_ID: &str = "com_jagex_auth_desktop_launcher";
 
 /// A *second*, distinct OAuth client ID used only for the consent leg (confirmed against
 /// the live server: using `CLIENT_ID` there gets rejected with `invalid_request` since it's
-/// not the one registered with `http://localhost` as a redirect_uri). Bolt hardcodes this
-/// as "the PRODUCTION value" with separate DEVELOPMENT/STAGING variants noted in a comment
-/// — this is the registered identifier itself (a protocol fact needed to interoperate),
+/// not the one registered with `http://localhost` as a redirect_uri). This is simply the
+/// registered identifier itself (a protocol fact needed to interoperate with Jagex's API),
 /// not creative expression.
 const CONSENT_CLIENT_ID: &str = "1fddee4e-b100-4f4e-b2b0-097f9088f9d2";
 

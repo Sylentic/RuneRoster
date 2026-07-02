@@ -2,8 +2,7 @@
 //!
 //! Built with `iced`'s Elm-architecture pattern: `App` holds all state, `update` reacts to
 //! `Message`s (including results of async `core` calls run via `Task::perform`), and `view`
-//! renders the current `Screen`. See `rs-launcher-plan.md` for why this UI is fully custom
-//! rather than modeled on Bolt's.
+//! renders the current `Screen`.
 //!
 //! The add-account flow needs two manual URL pastes (login, then consent) — not a UX choice,
 //! a confirmed constraint of Jagex's OAuth server (see `runeroster_core::auth` module docs).
@@ -19,13 +18,13 @@ use iced::widget::{button, column, container, image, row, rule, scrollable, text
 use iced::{Element, Length, Task, Theme};
 use uuid::Uuid;
 
-use runeroster_core::accounts::{add_profile_from_login, remove_profile, ProfileRegistry};
+use runeroster_core::accounts::{add_profile_from_login, reauth_profile, remove_profile, ProfileRegistry};
 use runeroster_core::auth::{LoginFlow, LoginOutcome};
 use runeroster_core::characters::Character;
 use runeroster_core::launcher::{launch, LaunchTarget};
 use runeroster_core::news::{fetch_latest_news, NewsItem};
 use runeroster_core::runelite_config::copy_profile_settings_from_default;
-use runeroster_core::session::{reconnect_profile, LaunchSession};
+use runeroster_core::session::{reconnect_profile, LaunchSession, ReconnectError};
 
 const NEWS_ITEM_COUNT: usize = 2;
 const NEWS_COLUMN_WIDTH: f32 = 408.0;
@@ -58,6 +57,9 @@ struct App {
     news: Vec<NewsItem>,
     news_error: Option<String>,
     news_images: HashMap<String, image::Handle>,
+    /// Set when a profile's stored session was rejected (expired/invalidated) — the profile
+    /// row for this id shows a "Log in again" button instead of "Launch" failing silently.
+    reauth_needed: Option<Uuid>,
 }
 
 enum Screen {
@@ -76,11 +78,15 @@ enum AddAccountStep {
         flow: LoginFlow,
         login_url: String,
         input: String,
+        /// `Some((profile_id, display_name))` when this wizard run is re-authenticating an
+        /// existing profile (triggered by `Message::StartReauth`) rather than adding a new one.
+        reauthenticating: Option<(Uuid, String)>,
     },
     EnteringConsentRedirect {
         flow: LoginFlow,
         consent_url: String,
         input: String,
+        reauthenticating: Option<(Uuid, String)>,
     },
     EnteringDisplayName {
         outcome: LoginOutcome,
@@ -91,23 +97,32 @@ enum AddAccountStep {
 #[derive(Debug, Clone)]
 enum Message {
     StartAddAccount,
+    StartReauth(Uuid),
     CancelAddAccount,
     OpenUrl(String),
     LoginRedirectInputChanged(String),
     SubmitLoginRedirect,
-    LoginStepDone(Result<(LoginFlow, String), String>),
+    LoginStepDone(Result<(LoginFlow, String), String>, Option<(Uuid, String)>),
     ConsentRedirectInputChanged(String),
     SubmitConsentRedirect,
-    ConsentStepDone(Result<LoginOutcome, String>),
+    ConsentStepDone(Result<LoginOutcome, String>, Option<(Uuid, String)>),
     DisplayNameInputChanged(String),
     SubmitDisplayName,
     LaunchProfile(Uuid),
-    ReconnectDone(Uuid, Result<(String, Vec<Character>), String>),
+    ReconnectDone(Uuid, Result<(String, Vec<Character>), ReconnectFailure>),
     RemoveProfile(Uuid),
     CopySettingsFromDefault(Uuid),
     LaunchCharacter(usize),
     NewsFetched(Result<Vec<NewsItem>, String>),
     NewsImageFetched(String, Result<Vec<u8>, String>),
+}
+
+/// Distinguishes "session expired, needs reauth" from other reconnect failures so the UI can
+/// offer a "Log in again" action instead of just showing an error string.
+#[derive(Debug, Clone)]
+enum ReconnectFailure {
+    ReauthRequired,
+    Other(String),
 }
 
 /// Downloads a news thumbnail's raw bytes so it can be decoded into an `image::Handle`.
@@ -148,6 +163,7 @@ impl App {
                 news: Vec::new(),
                 news_error: None,
                 news_images: HashMap::new(),
+                reauth_needed: None,
             },
             news_task,
         )
@@ -161,8 +177,25 @@ impl App {
                     flow,
                     login_url,
                     input: String::new(),
+                    reauthenticating: None,
                 });
                 self.status = None;
+                Task::none()
+            }
+            Message::StartReauth(id) => {
+                let Some(profile) = self.registry.profiles.iter().find(|p| p.id == id) else {
+                    self.status = Some("Profile no longer exists.".into());
+                    return Task::none();
+                };
+                let (flow, login_url) = LoginFlow::start();
+                self.screen = Screen::AddAccount(AddAccountStep::EnteringLoginRedirect {
+                    flow,
+                    login_url,
+                    input: String::new(),
+                    reauthenticating: Some((id, profile.display_name.clone())),
+                });
+                self.status = None;
+                self.reauth_needed = None;
                 Task::none()
             }
             Message::CancelAddAccount => {
@@ -190,26 +223,33 @@ impl App {
                 if let Screen::AddAccount(AddAccountStep::EnteringLoginRedirect {
                     flow,
                     input,
+                    reauthenticating,
                     ..
                 }) = previous
                 {
                     let http = self.http.clone();
                     Task::perform(
                         async move { flow.submit_login_redirect(&http, &input).await },
-                        |result| Message::LoginStepDone(result.map_err(|e| e.to_string())),
+                        move |result| {
+                            Message::LoginStepDone(
+                                result.map_err(|e| e.to_string()),
+                                reauthenticating,
+                            )
+                        },
                     )
                 } else {
                     self.screen = previous;
                     Task::none()
                 }
             }
-            Message::LoginStepDone(result) => {
+            Message::LoginStepDone(result, reauthenticating) => {
                 match result {
                     Ok((flow, consent_url)) => {
                         self.screen = Screen::AddAccount(AddAccountStep::EnteringConsentRedirect {
                             flow,
                             consent_url,
                             input: String::new(),
+                            reauthenticating,
                         });
                     }
                     Err(e) => {
@@ -236,28 +276,44 @@ impl App {
                 if let Screen::AddAccount(AddAccountStep::EnteringConsentRedirect {
                     flow,
                     input,
+                    reauthenticating,
                     ..
                 }) = previous
                 {
                     let http = self.http.clone();
                     Task::perform(
                         async move { flow.submit_consent_redirect(&http, &input).await },
-                        |result| Message::ConsentStepDone(result.map_err(|e| e.to_string())),
+                        move |result| {
+                            Message::ConsentStepDone(
+                                result.map_err(|e| e.to_string()),
+                                reauthenticating,
+                            )
+                        },
                     )
                 } else {
                     self.screen = previous;
                     Task::none()
                 }
             }
-            Message::ConsentStepDone(result) => {
-                match result {
-                    Ok(outcome) => {
+            Message::ConsentStepDone(result, reauthenticating) => {
+                match (result, reauthenticating) {
+                    (Ok(outcome), Some((profile_id, display_name))) => {
+                        self.status = Some(match reauth_profile(profile_id, &outcome.session_id) {
+                            Ok(()) => format!("Logged in again as \"{display_name}\"."),
+                            Err(e) => format!("Failed to save refreshed session: {e}"),
+                        });
+                        if self.reauth_needed == Some(profile_id) {
+                            self.reauth_needed = None;
+                        }
+                        self.screen = Screen::ProfileList;
+                    }
+                    (Ok(outcome), None) => {
                         self.screen = Screen::AddAccount(AddAccountStep::EnteringDisplayName {
                             outcome,
                             input: String::new(),
                         });
                     }
-                    Err(e) => {
+                    (Err(e), _) => {
                         self.screen = Screen::ProfileList;
                         self.status = Some(format!("Consent step failed: {e}"));
                     }
@@ -308,7 +364,12 @@ impl App {
                             id,
                             result
                                 .map(|session| (session.session_id, session.characters))
-                                .map_err(|e| e.to_string()),
+                                .map_err(|e| match e {
+                                    ReconnectError::ReauthRequired => {
+                                        ReconnectFailure::ReauthRequired
+                                    }
+                                    other => ReconnectFailure::Other(other.to_string()),
+                                }),
                         )
                     },
                 )
@@ -316,17 +377,24 @@ impl App {
             Message::ReconnectDone(profile_id, result) => {
                 match result {
                     Ok((session_id, characters)) => {
+                        if self.reauth_needed == Some(profile_id) {
+                            self.reauth_needed = None;
+                        }
                         self.screen = Screen::CharacterPicker {
                             profile_id,
                             session_id,
                             characters,
                         };
                     }
-                    Err(e) => {
+                    Err(ReconnectFailure::ReauthRequired) => {
                         self.screen = Screen::ProfileList;
-                        self.status = Some(format!(
-                            "Couldn't reconnect (you may need to log in again): {e}"
-                        ));
+                        self.reauth_needed = Some(profile_id);
+                        self.status =
+                            Some("This profile's session has expired — log in again.".into());
+                    }
+                    Err(ReconnectFailure::Other(e)) => {
+                        self.screen = Screen::ProfileList;
+                        self.status = Some(format!("Couldn't reconnect: {e}"));
                     }
                 }
                 Task::none()
@@ -439,9 +507,19 @@ impl App {
 
         let mut profile_list = column![].spacing(12);
         for profile in &self.registry.profiles {
-            profile_list = profile_list.push(card(
-                column![
-                    text(profile.display_name.clone()).size(16),
+            let mut profile_card = column![text(profile.display_name.clone()).size(16)].spacing(8);
+
+            if self.reauth_needed == Some(profile.id) {
+                profile_card = profile_card.push(text("Session expired.").size(12));
+                profile_card = profile_card.push(
+                    row![
+                        button("Log in again").on_press(Message::StartReauth(profile.id)),
+                        button("Remove").on_press(Message::RemoveProfile(profile.id)),
+                    ]
+                    .spacing(8),
+                );
+            } else {
+                profile_card = profile_card.push(
                     row![
                         button("Launch").on_press(Message::LaunchProfile(profile.id)),
                         button("Copy settings from Default")
@@ -449,9 +527,10 @@ impl App {
                         button("Remove").on_press(Message::RemoveProfile(profile.id)),
                     ]
                     .spacing(8),
-                ]
-                .spacing(8),
-            ));
+                );
+            }
+
+            profile_list = profile_list.push(card(profile_card));
         }
 
         let mut accounts_section = column![
@@ -526,36 +605,56 @@ impl App {
     fn view_add_account(step: &AddAccountStep) -> Element<'_, Message> {
         let content = match step {
             AddAccountStep::EnteringLoginRedirect {
-                login_url, input, ..
-            } => column![
-                text("Step 1: Log in").size(20),
-                text("Open the login page, log in, then paste the URL it redirects to."),
-                button("Open login page").on_press(Message::OpenUrl(login_url.clone())),
-                text_input("Paste redirect URL here", input)
-                    .on_input(Message::LoginRedirectInputChanged),
-                row![
-                    button("Continue").on_press(Message::SubmitLoginRedirect),
-                    button("Cancel").on_press(Message::CancelAddAccount),
+                login_url,
+                input,
+                reauthenticating,
+                ..
+            } => {
+                let heading = match reauthenticating {
+                    Some((_, display_name)) => {
+                        format!("Step 1: Log in again to \"{display_name}\"")
+                    }
+                    None => "Step 1: Log in".to_string(),
+                };
+                column![
+                    text(heading).size(20),
+                    text("Open the login page, log in, then paste the URL it redirects to."),
+                    button("Open login page").on_press(Message::OpenUrl(login_url.clone())),
+                    text_input("Paste redirect URL here", input)
+                        .on_input(Message::LoginRedirectInputChanged),
+                    row![
+                        button("Continue").on_press(Message::SubmitLoginRedirect),
+                        button("Cancel").on_press(Message::CancelAddAccount),
+                    ]
+                    .spacing(10),
                 ]
-                .spacing(10),
-            ],
+            }
             AddAccountStep::EnteringConsentRedirect {
-                consent_url, input, ..
-            } => column![
-                text("Step 2: Consent").size(20),
-                text(
-                    "Open the consent page, approve access, then paste the URL it redirects \
-                     to (starts with http://localhost/#...)."
-                ),
-                button("Open consent page").on_press(Message::OpenUrl(consent_url.clone())),
-                text_input("Paste redirect URL here", input)
-                    .on_input(Message::ConsentRedirectInputChanged),
-                row![
-                    button("Continue").on_press(Message::SubmitConsentRedirect),
-                    button("Cancel").on_press(Message::CancelAddAccount),
+                consent_url,
+                input,
+                reauthenticating,
+                ..
+            } => {
+                let heading = match reauthenticating {
+                    Some(_) => "Step 2: Consent (reauthenticating)".to_string(),
+                    None => "Step 2: Consent".to_string(),
+                };
+                column![
+                    text(heading).size(20),
+                    text(
+                        "Open the consent page, approve access, then paste the URL it redirects \
+                         to (starts with http://localhost/#...)."
+                    ),
+                    button("Open consent page").on_press(Message::OpenUrl(consent_url.clone())),
+                    text_input("Paste redirect URL here", input)
+                        .on_input(Message::ConsentRedirectInputChanged),
+                    row![
+                        button("Continue").on_press(Message::SubmitConsentRedirect),
+                        button("Cancel").on_press(Message::CancelAddAccount),
+                    ]
+                    .spacing(10),
                 ]
-                .spacing(10),
-            ],
+            }
             AddAccountStep::EnteringDisplayName { outcome, input } => column![
                 text("Step 3: Name this profile").size(20),
                 text(format!(

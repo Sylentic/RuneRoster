@@ -46,8 +46,8 @@ pub enum ReconnectError {
 }
 
 /// Loads a profile's persisted `session_id` and confirms it's still valid by refreshing its
-/// character list. This is what "launching" a profile should do first — Bolt's own approach
-/// (see `crate::store` docs) is to reuse a persisted session_id across restarts rather than
+/// character list. This is what "launching" a profile should do first — the approach (see
+/// `crate::store` docs) is to reuse a persisted session_id across restarts rather than
 /// running the full login flow every time, only redoing it once the session actually expires.
 pub async fn reconnect_profile(
     http: &reqwest::Client,

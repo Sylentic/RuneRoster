@@ -2,8 +2,7 @@
 //!
 //! `GET /game-session/v1/accounts` on `auth.jagex.com`, authenticated with the session ID
 //! minted in `crate::auth::create_game_session`. Response shape (`accountId`, `displayName`)
-//! confirmed by reading RuneLite/Bolt client code as a reference — this module makes the
-//! request itself rather than reusing any of it.
+//! confirmed live against the real API.
 
 use serde::Deserialize;
 

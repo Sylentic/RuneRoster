@@ -1,10 +1,10 @@
 //! Secret storage: one game `session_id` per profile, in the OS credential store.
 //!
-//! **Not an OAuth refresh token** — Bolt's source has no `grant_type=refresh_token` call
-//! anywhere; instead it persists the game `session_id` itself (from
-//! `auth::create_game_session`) and reuses it directly across app restarts, only redoing
-//! the full `auth::LoginFlow` when that `session_id` eventually gets rejected (HTTP 401 —
-//! see `characters::CharacterError::is_unauthorized` and `session::reconnect_profile`).
+//! **Not an OAuth refresh token** — Jagex's game-session API has no `grant_type=refresh_token`
+//! call; instead the game `session_id` itself (from `auth::create_game_session`) is persisted
+//! and reused directly across app restarts, only redoing the full `auth::LoginFlow` when that
+//! `session_id` eventually gets rejected (HTTP 401 — see
+//! `characters::CharacterError::is_unauthorized` and `session::reconnect_profile`).
 //! `session_id` is also exactly what gets handed to RuneLite as `JX_SESSION_ID` at launch.
 //!
 //! Wraps the `keyring` crate (Windows Credential Manager on Windows, Secret Service on

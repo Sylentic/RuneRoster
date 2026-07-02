@@ -1,9 +1,9 @@
 //! Multi-account profile management.
 //!
-//! A `Profile` is RuneRoster's own concept, not present in Bolt (which only tracks a single
-//! logged-in account at a time) — this is the core addition that makes multi-accounting work.
-//! Profile metadata (id + display name) is non-secret and persisted as plain JSON via
-//! `ProfileRegistry`; secrets (refresh tokens) live in the OS keyring, see `crate::store`.
+//! A `Profile` is RuneRoster's own concept — this is the core addition that makes
+//! multi-accounting work. Profile metadata (id + display name) is non-secret and persisted
+//! as plain JSON via `ProfileRegistry`; secrets (session ids) live in the OS keyring, see
+//! `crate::store`.
 
 use std::fs;
 use std::path::Path;
@@ -124,6 +124,14 @@ pub fn remove_profile(
     Ok(())
 }
 
+/// Refreshes an existing profile's stored `session_id` after re-running `crate::auth::LoginFlow`
+/// for it (in response to `crate::session::ReconnectError::ReauthRequired`). Unlike
+/// `add_profile_from_login`, this doesn't touch `ProfileRegistry` at all — the profile already
+/// exists there with its display name unchanged; only its stored credential is replaced.
+pub fn reauth_profile(profile_id: Uuid, session_id: &str) -> Result<(), StoreError> {
+    TokenStore::save_session_id(profile_id, session_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +192,28 @@ mod tests {
         assert!(registry.profiles.is_empty());
         assert!(TokenStore::load_session_id(profile.id).is_err());
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Reauth should overwrite the stored session_id in place without touching the registry.
+    #[test]
+    fn reauth_profile_overwrites_stored_session_id() {
+        let mut registry = ProfileRegistry::default();
+        let dir = std::env::temp_dir().join(format!("runeroster-test-{}", Uuid::new_v4()));
+        let path = dir.join("profiles.json");
+
+        let profile =
+            add_profile_from_login(&mut registry, &path, "Main", "old-session-id").unwrap();
+
+        reauth_profile(profile.id, "new-session-id").unwrap();
+
+        assert_eq!(registry.profiles.len(), 1);
+        assert_eq!(
+            TokenStore::load_session_id(profile.id).unwrap(),
+            "new-session-id"
+        );
+
+        remove_profile(&mut registry, &path, profile.id).unwrap();
         fs::remove_dir_all(&dir).ok();
     }
 }

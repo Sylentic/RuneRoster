@@ -1,7 +1,7 @@
 //! Spawns RuneLite for a given profile + selected character.
 //!
 //! Uses pieces of RuneLite's own (documented, or discovered by reading its launcher source)
-//! launch contract — not anything specific to Bolt:
+//! launch contract:
 //! - the `--profile=<name>` client argument, which loads/creates an isolated RuneLite
 //!   settings profile (see the [RuneLite Launcher Configuration wiki](https://github.com/runelite/runelite/wiki/RuneLite-Launcher-Configuration)).
 //!   **Must be delivered via the `RUNELITE_ARGS` environment variable, not a raw CLI arg**
