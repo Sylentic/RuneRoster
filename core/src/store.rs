@@ -3,10 +3,13 @@
 //! Wraps the `keyring` crate (Windows Credential Manager on Windows, Secret Service on
 //! Linux once that platform is picked up) behind a small API keyed by profile UUID. No
 //! custom crypto — this just delegates to the OS-native secret store.
+//!
+//! Keyed by `Uuid` rather than `&Profile` so an entry can still be cleaned up (deleted)
+//! after its profile has already been removed from `ProfileRegistry` — see
+//! `crate::accounts::remove_profile`.
 
 use keyring::Entry;
-
-use crate::accounts::Profile;
+use uuid::Uuid;
 
 const SERVICE_NAME: &str = "RuneRoster";
 
@@ -20,21 +23,21 @@ pub enum StoreError {
 pub struct TokenStore;
 
 impl TokenStore {
-    fn entry(profile: &Profile) -> Result<Entry, StoreError> {
-        Ok(Entry::new(SERVICE_NAME, &profile.id.to_string())?)
+    fn entry(id: Uuid) -> Result<Entry, StoreError> {
+        Ok(Entry::new(SERVICE_NAME, &id.to_string())?)
     }
 
-    pub fn save_refresh_token(profile: &Profile, refresh_token: &str) -> Result<(), StoreError> {
-        Self::entry(profile)?.set_password(refresh_token)?;
+    pub fn save_refresh_token(id: Uuid, refresh_token: &str) -> Result<(), StoreError> {
+        Self::entry(id)?.set_password(refresh_token)?;
         Ok(())
     }
 
-    pub fn load_refresh_token(profile: &Profile) -> Result<String, StoreError> {
-        Ok(Self::entry(profile)?.get_password()?)
+    pub fn load_refresh_token(id: Uuid) -> Result<String, StoreError> {
+        Ok(Self::entry(id)?.get_password()?)
     }
 
-    pub fn delete_refresh_token(profile: &Profile) -> Result<(), StoreError> {
-        Self::entry(profile)?.delete_credential()?;
+    pub fn delete_refresh_token(id: Uuid) -> Result<(), StoreError> {
+        Self::entry(id)?.delete_credential()?;
         Ok(())
     }
 }
