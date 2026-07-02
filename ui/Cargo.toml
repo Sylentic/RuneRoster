@@ -1,0 +1,10 @@
+[package]
+name = "runeroster"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+runeroster-core = { path = "../core" }
+runeroster-platform = { path = "../platform" }
+tokio = { workspace = true }
