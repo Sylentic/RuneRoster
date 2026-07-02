@@ -18,6 +18,7 @@ use runeroster_core::accounts::{add_profile_from_login, remove_profile, ProfileR
 use runeroster_core::auth::{LoginFlow, LoginOutcome};
 use runeroster_core::characters::Character;
 use runeroster_core::launcher::{launch, LaunchTarget};
+use runeroster_core::runelite_config::copy_profile_settings_from_default;
 use runeroster_core::session::{reconnect_profile, LaunchSession};
 
 fn profiles_path() -> PathBuf {
@@ -81,6 +82,7 @@ enum Message {
     LaunchProfile(Uuid),
     ReconnectDone(Uuid, Result<(String, Vec<Character>), String>),
     RemoveProfile(Uuid),
+    CopySettingsFromDefault(Uuid),
     LaunchCharacter(usize),
 }
 
@@ -286,6 +288,22 @@ impl App {
                 );
                 Task::none()
             }
+            Message::CopySettingsFromDefault(id) => {
+                self.status = Some(
+                    match copy_profile_settings_from_default(&id.to_string()) {
+                        Ok(()) => {
+                            "Copied Default's plugin settings into this profile. \
+                             Restart RuneLite for this profile to see the change."
+                                .into()
+                        }
+                        Err(e) => format!(
+                            "Couldn't copy settings (make sure RuneLite isn't running for \
+                             this profile, and that it's been launched at least once): {e}"
+                        ),
+                    },
+                );
+                Task::none()
+            }
             Message::LaunchCharacter(index) => {
                 self.status = Some(self.try_launch_character(index));
                 self.screen = Screen::ProfileList;
@@ -342,6 +360,8 @@ impl App {
                 row![
                     text(profile.display_name.clone()).width(Length::Fill),
                     button("Launch").on_press(Message::LaunchProfile(profile.id)),
+                    button("Copy settings from Default")
+                        .on_press(Message::CopySettingsFromDefault(profile.id)),
                     button("Remove").on_press(Message::RemoveProfile(profile.id)),
                 ]
                 .spacing(10),
