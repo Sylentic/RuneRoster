@@ -25,6 +25,17 @@ pub enum CharacterError {
     Request(#[from] reqwest::Error),
 }
 
+impl CharacterError {
+    /// True if this looks like an expired/invalid session (HTTP 401) rather than a
+    /// transient network failure — callers should prompt the user to log in again via
+    /// `auth::LoginFlow` instead of just retrying. See `crate::session::reconnect_profile`.
+    pub fn is_unauthorized(&self) -> bool {
+        match self {
+            CharacterError::Request(e) => e.status() == Some(reqwest::StatusCode::UNAUTHORIZED),
+        }
+    }
+}
+
 /// Lists the characters available under a given game session.
 pub async fn list_characters(
     http: &reqwest::Client,

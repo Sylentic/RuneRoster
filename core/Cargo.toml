@@ -19,6 +19,7 @@ urlencoding = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 open = { workspace = true }
+runeroster-platform = { path = "../platform" }
 
 [[example]]
 name = "login_test"

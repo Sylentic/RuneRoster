@@ -42,3 +42,5 @@ $RECYCLE.BIN/
 
 # Testing
 core/examples/login_test.rs
+core/examples/launch_test.rs
+

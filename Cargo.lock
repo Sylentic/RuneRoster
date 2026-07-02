@@ -771,6 +771,7 @@ dependencies = [
  "open",
  "rand 0.8.6",
  "reqwest",
+ "runeroster-platform",
  "serde",
  "serde_json",
  "sha2",

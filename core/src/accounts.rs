@@ -81,8 +81,9 @@ pub enum AddProfileError {
 }
 
 /// Completes account setup after a `crate::auth::LoginFlow` finishes: creates a new
-/// `Profile`, persists its refresh token to the OS keyring, adds it to `registry`, and
-/// saves `registry` to `registry_path`.
+/// `Profile`, persists its game `session_id` to the OS keyring (not an OAuth refresh token
+/// — see `crate::store` docs for why), adds it to `registry`, and saves `registry` to
+/// `registry_path`.
 ///
 /// Order matters for failure safety: the keyring write happens *before* the profile is
 /// added to the in-memory registry, so if it fails, nothing else has been touched. If the
@@ -92,16 +93,16 @@ pub fn add_profile_from_login(
     registry: &mut ProfileRegistry,
     registry_path: &Path,
     display_name: impl Into<String>,
-    refresh_token: &str,
+    session_id: &str,
 ) -> Result<Profile, AddProfileError> {
     let profile = Profile::new(display_name);
 
-    TokenStore::save_refresh_token(profile.id, refresh_token)?;
+    TokenStore::save_session_id(profile.id, session_id)?;
 
     registry.profiles.push(profile.clone());
     if let Err(e) = registry.save(registry_path) {
         registry.profiles.retain(|p| p.id != profile.id);
-        let _ = TokenStore::delete_refresh_token(profile.id);
+        let _ = TokenStore::delete_session_id(profile.id);
         return Err(e.into());
     }
 
@@ -119,7 +120,7 @@ pub fn remove_profile(
 ) -> Result<(), RegistryError> {
     registry.remove(id);
     registry.save(registry_path)?;
-    let _ = TokenStore::delete_refresh_token(id);
+    let _ = TokenStore::delete_session_id(id);
     Ok(())
 }
 
@@ -168,7 +169,7 @@ mod tests {
         let path = dir.join("profiles.json");
 
         let profile =
-            add_profile_from_login(&mut registry, &path, "Main", "fake-refresh-token").unwrap();
+            add_profile_from_login(&mut registry, &path, "Main", "fake-session-id").unwrap();
 
         assert_eq!(registry.profiles.len(), 1);
         assert_eq!(registry.profiles[0].id, profile.id);
@@ -176,12 +177,12 @@ mod tests {
         let loaded = ProfileRegistry::load(&path).unwrap();
         assert_eq!(loaded, registry);
 
-        let stored = TokenStore::load_refresh_token(profile.id).unwrap();
-        assert_eq!(stored, "fake-refresh-token");
+        let stored = TokenStore::load_session_id(profile.id).unwrap();
+        assert_eq!(stored, "fake-session-id");
 
         remove_profile(&mut registry, &path, profile.id).unwrap();
         assert!(registry.profiles.is_empty());
-        assert!(TokenStore::load_refresh_token(profile.id).is_err());
+        assert!(TokenStore::load_session_id(profile.id).is_err());
 
         fs::remove_dir_all(&dir).ok();
     }
