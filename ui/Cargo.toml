@@ -8,3 +8,7 @@ license = "MIT"
 runeroster-core = { path = "../core" }
 runeroster-platform = { path = "../platform" }
 tokio = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+open = { workspace = true }
+iced = { version = "0.14", features = ["tokio"] }

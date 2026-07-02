@@ -81,6 +81,7 @@ pub enum AuthError {
 }
 
 /// A PKCE verifier/challenge pair. Generate one fresh per login attempt.
+#[derive(Clone)]
 pub struct Pkce {
     pub verifier: String,
     pub challenge: String,
@@ -344,6 +345,24 @@ pub enum LoginFlow {
     },
 }
 
+impl Clone for LoginFlow {
+    fn clone(&self) -> Self {
+        match self {
+            LoginFlow::AwaitingLogin { pkce, state } => LoginFlow::AwaitingLogin {
+                pkce: pkce.clone(),
+                state: state.clone(),
+            },
+            LoginFlow::AwaitingConsent {
+                refresh_token,
+                consent_state,
+            } => LoginFlow::AwaitingConsent {
+                refresh_token: refresh_token.clone(),
+                consent_state: consent_state.clone(),
+            },
+        }
+    }
+}
+
 impl std::fmt::Debug for LoginFlow {
     /// Deliberately redacts secrets — `refresh_token` is a live credential, and printing it
     /// via `{:?}` by accident (e.g. in a log line) would be the same mistake this codebase
@@ -359,10 +378,23 @@ impl std::fmt::Debug for LoginFlow {
 /// The result of a completed `LoginFlow`: a refresh token to persist for this profile (see
 /// `crate::store::TokenStore`), plus the character list to show the user so they can pick
 /// one to launch.
+#[derive(Clone)]
 pub struct LoginOutcome {
     pub refresh_token: String,
     pub session_id: String,
     pub characters: Vec<crate::characters::Character>,
+}
+
+impl std::fmt::Debug for LoginOutcome {
+    /// Redacts `refresh_token`/`session_id` — both are live credentials. Needed because
+    /// UI frameworks (e.g. iced) commonly require message payloads to implement `Debug`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginOutcome")
+            .field("refresh_token", &"<redacted>")
+            .field("session_id", &"<redacted>")
+            .field("characters", &self.characters)
+            .finish()
+    }
 }
 
 impl LoginFlow {
